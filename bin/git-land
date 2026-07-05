@@ -74,27 +74,40 @@ echo "git-land: opened $pr_url"
 
 gh pr comment "$pr_url" --body "PR automatically created and merged without review for recordkeeping."
 
-if gh pr merge "$pr_url" --rebase --delete-branch; then
+# Push the exact local (already-signed) commits straight onto the base branch.
+# behind==0 was already confirmed, so this is a plain fast-forward — no server-side
+# rebase involved, unlike `gh pr merge --rebase`, which would recreate the commits via
+# GitHub's API and strip GPG signatures / rewrite the committer to the GitHub account email.
+if git push "$remote" "HEAD:refs/heads/$branch"; then
   merged=1
-  echo "git-land: merged immediately"
-
-  git fetch "$remote" "$branch"
-
-  if git diff --quiet "$old_head" "$remote/$branch"; then
-    git update-ref "refs/heads/$branch" "$remote/$branch"
-    echo "git-land: local '$branch' synced to $remote/$branch"
-  else
-    echo "git-land: warning — $remote/$branch diverged from expected content (concurrent push?)." >&2
-    echo "git-land: not touching local '$branch'. Run 'git pull --rebase' to reconcile." >&2
-  fi
+  echo "git-land: pushed directly to $remote/$branch (signatures preserved); PR will auto-close as merged"
+  git push "$remote" --delete "$tmp" || echo "git-land: could not delete $remote/$tmp, leaving it" >&2
 else
-  echo "git-land: immediate merge blocked (checks/review required), scheduling auto-merge"
-  if gh pr merge "$pr_url" --rebase --auto --delete-branch; then
+  echo "git-land: direct push rejected (branch protection?) — falling back to API rebase-merge" >&2
+  echo "git-land: warning — this path recreates commits via GitHub's API, losing GPG signatures and rewriting the committer email" >&2
+
+  if gh pr merge "$pr_url" --rebase --delete-branch; then
     merged=1
-    echo "git-land: auto-merge enabled. It will land once checks pass — local '$branch' not yet synced."
-    echo "git-land: run 'git pull --rebase' once it's merged."
+    echo "git-land: merged immediately"
+
+    git fetch "$remote" "$branch"
+
+    if git diff --quiet "$old_head" "$remote/$branch"; then
+      git update-ref "refs/heads/$branch" "$remote/$branch"
+      echo "git-land: local '$branch' synced to $remote/$branch"
+    else
+      echo "git-land: warning — $remote/$branch diverged from expected content (concurrent push?)." >&2
+      echo "git-land: not touching local '$branch'. Run 'git pull --rebase' to reconcile." >&2
+    fi
   else
-    echo "git-land: could not enable auto-merge either — PR left open at $pr_url" >&2
-    exit 1
+    echo "git-land: immediate merge blocked (checks/review required), scheduling auto-merge"
+    if gh pr merge "$pr_url" --rebase --auto --delete-branch; then
+      merged=1
+      echo "git-land: auto-merge enabled. It will land once checks pass — local '$branch' not yet synced."
+      echo "git-land: run 'git pull --rebase' once it's merged."
+    else
+      echo "git-land: could not enable auto-merge either — PR left open at $pr_url" >&2
+      exit 1
+    fi
   fi
 fi
