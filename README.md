@@ -15,7 +15,7 @@ This symlinks:
 - `hooks/commit-msg` into `~/.config/git/hooks/commit-msg`
 - `ignore` into `~/.config/git/ignore` (git reads this automatically as the global gitignore)
 
-It does **not** touch `~/.gitconfig` — see below.
+Being symlinks, editing the installed path edits the repo file directly, so they can't drift out of sync with it. It does **not** touch `~/.gitconfig` — see below.
 
 ## `git land [title] [--force]`
 
@@ -38,7 +38,8 @@ on the default branch.
 
 ## `~/.gitconfig`
 
-Copy `gitconfig.example` to `~/.gitconfig` and fill in your name, email, and a GPG signing key
+Templated rather than symlinked because it can legitimately hold different values (name, email,
+key) across machines. Copy `gitconfig.example` to `~/.gitconfig` and fill in your name, email, and a GPG signing key
 (`gpg --list-secret-keys --keyid-format=long`; `gpg --full-generate-key` if you don't have one).
 
 New machine, two options:
