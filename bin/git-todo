@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ $# -eq 0 ]; then
+  echo "usage: git todo <title...> [-b|--body <body>]" >&2
+  exit 1
+fi
+
+body=""
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -b|--body)
+      body="$2"
+      shift 2
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+title="${args[*]}"
+
+if [ -z "$title" ]; then
+  echo "git-todo: missing title" >&2
+  exit 1
+fi
+
+issue_url="$(gh issue create --title "$title" --body "$body" --assignee @me)"
+number="${issue_url##*/}"
+
+echo "git-todo: opened $issue_url"
+echo "git-todo: reference \"Fixes #${number}\" in a commit to auto-close it once that commit lands on the default branch"
