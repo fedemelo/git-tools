@@ -1,0 +1,2 @@
+#!/bin/sh
+sed -i '' '/^Co-Authored-By:/d' "$1"
