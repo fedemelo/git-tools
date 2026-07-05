@@ -1,0 +1,9 @@
+[user]
+	name = Your Name
+	email = you@example.com
+	signingKey = YOUR_GPG_KEY_ID
+[commit]
+	gpgSign = true
+[core]
+	editor = nano
+	hooksPath = ~/.config/git/hooks
