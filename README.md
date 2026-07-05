@@ -19,38 +19,55 @@ It does **not** touch `~/.gitconfig` — see below.
 
 ## `git land [title] [--force]`
 
-Takes commits already sitting on your local branch, ahead of its upstream, and lands them
-through a real PR instead of a plain push: pushes them to a disposable branch, opens a PR
-(title defaults to the last commit's subject), posts a short comment explaining the PR was
-auto-created and merged without review, then merges via rebase (commits land individually,
-no squash) and cleans up the temp branch.
+Lands commits already ahead of your branch's upstream through a real PR instead of a plain
+push: pushes to a disposable branch, opens a PR (title defaults to the last commit's subject),
+comments that it was auto-created and merged without review, rebase-merges (no squash), and
+deletes the temp branch.
 
 Refuses to run if:
 - the branch is behind its upstream (pull/rebase first)
 - there's nothing to land
-- the remote repo isn't owned by your authenticated GitHub account (pass `--force` to override
-  — this exists to stop the tool from ever auto-merging unreviewed work onto someone else's repo)
+- the remote repo isn't owned by your authenticated GitHub account — pass `--force` to override
+  (stops the tool from ever auto-merging unreviewed work onto someone else's repo)
 
 ## `git todo <title...> [-b|--body <body>]`
 
-Opens a GitHub issue in the current repo in one line, assigned to you, no browser needed.
-Prints the issue number and a reminder that `Fixes #N` in a later commit message will
-auto-close it once that commit lands on the default branch.
+Opens a GitHub issue in the current repo, assigned to you, no browser needed. Prints the issue
+number and a reminder that `Fixes #N` in a later commit auto-closes it once that commit lands
+on the default branch.
 
 ## `~/.gitconfig`
 
 Copy `gitconfig.example` to `~/.gitconfig` and fill in your name, email, and a GPG signing key
-(`gpg --list-secret-keys --keyid-format=long`, generate one with `gpg --full-generate-key` if
-you don't have one yet).
+(`gpg --list-secret-keys --keyid-format=long`; `gpg --full-generate-key` if you don't have one).
 
-Setting up a new machine, you have two options:
-- **Reuse your existing key**: `gpg --export-secret-keys --armor <KEYID> > key.asc` on the old
-  machine, `gpg --import key.asc` on the new one.
-- **Generate a new key**: run `gpg --full-generate-key`, then add the new public key at
+New machine, two options:
+- **Reuse your key**: `gpg --export-secret-keys --armor <KEYID> > key.asc`, then
+  `gpg --import key.asc` on the new machine.
+- **New key**: `gpg --full-generate-key`, then add the public key at
   https://github.com/settings/keys so commits still show as "Verified".
 
-**Do not store a GitHub token in `.gitconfig`.** Git has no such field for authentication —
-use `gh auth login` instead, which stores credentials via your OS keychain, not a plaintext file.
+### Committing under a different email in some repos
+
+Override the global `user.email` per-repo with `git config user.email <other-email>` (e.g. a
+university email for school repos). One GPG key can hold multiple UIDs and signs regardless of
+which UID is active, so commits under either email still verify if:
+
+1. The email is verified on your GitHub account (Settings → Emails).
+2. It's a UID on your signing key: `gpg --quick-add-uid <KEYID> "Your Name <other-email>"`.
+3. GitHub has the updated key — it won't refresh UIDs on an already-registered key, so
+   delete and re-add it:
+   ```sh
+   gpg --armor --export <KEYID> > key.asc
+   gh api user/gpg_keys --jq '.[] | select(.key_id == "<KEYID short form>") | .id'  # registration id
+   gh api -X DELETE user/gpg_keys/<id>
+   gh gpg-key add key.asc --title "<some title>"
+   ```
+   Only affects GitHub's verification badge, not the local key or commit history. Keep
+   `key.asc` until the re-add succeeds.
+
+Verify: `gh api repos/<owner>/<repo>/commits/<sha> --jq '.commit.verification'` should show
+`"verified": true, "reason": "valid"`.
 
 ## `hooks/commit-msg`
 
