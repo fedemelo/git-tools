@@ -2,6 +2,8 @@
 
 Personal git workflow tooling: two subcommands plus supporting global config.
 
+These tools also back the `land` / `todo` skills in [claude-config](https://github.com/fedemelo/claude-config), so install this repo first if you use those.
+
 ## Install
 
 ```sh
