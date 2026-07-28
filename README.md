@@ -19,18 +19,46 @@ This symlinks:
 
 Being symlinks, editing the installed path edits the repo file directly, so they can't drift out of sync with it. It does **not** touch `~/.gitconfig` — see below.
 
-## `git land [title] [--force]`
+## `git land [title] [--until <commit>] [--each] [--force]`
 
 Lands commits already ahead of your branch's upstream through a real PR instead of a plain
 push: pushes to a disposable branch, opens a PR (title defaults to the last commit's subject),
 comments that it was auto-created and merged without review, rebase-merges (no squash), and
 deletes the temp branch.
 
+By default it lands everything ahead of upstream as one PR. To split a stack across several
+PRs:
+
+- `--until <commit>` lands only `upstream..<commit>` and leaves everything above it local.
+  Takes any commit-ish (`abc123`, `HEAD~2`, a tag). Run it again to land the next batch.
+- `--each` lands every commit ahead as its own PR, titled from that commit's subject. Combine
+  with `--until` to cap how far it goes.
+
+Only a *prefix* of your history can be landed, because commits are a chain: you can land the
+first two and then the rest, but never the first and third while skipping the second. So order
+commits to match the PRs you want; there is no need to interleave committing and landing.
+
 Refuses to run if:
 - the branch is behind its upstream (pull/rebase first)
-- there's nothing to land
+- there's nothing to land, or `--until` names a commit already on upstream
+- `--until` names a commit that isn't an ancestor of `HEAD`, or that sits behind upstream
+- `--each` is given an explicit title, which each commit supplies instead
 - the remote repo isn't owned by your authenticated GitHub account — pass `--force` to override
   (stops the tool from ever auto-merging unreviewed work onto someone else's repo)
+
+When the direct fast-forward push is refused (branch protection), it falls back to a
+server-side rebase-merge, which rewrites the landed commits. Anything still unlanded on top of
+them is replayed onto the new upstream head, so a partial land never strands local work.
+
+## Tests
+
+```sh
+tests/git-land.test.sh
+```
+
+No dependencies and no network: the remote is a local bare repo and `gh` is a stub earlier on
+`PATH`, including a stand-in for GitHub's rebase-merge so the branch-protection fallback is
+covered too.
 
 ## `git todo <title...> [-b|--body <body>]`
 
