@@ -32,7 +32,9 @@ PRs:
 - `--until <commit>` lands only `upstream..<commit>` and leaves everything above it local.
   Takes any commit-ish (`abc123`, `HEAD~2`, a tag). Run it again to land the next batch.
 - `--each` lands every commit ahead as its own PR, titled from that commit's subject. Combine
-  with `--until` to cap how far it goes.
+  with `--until` to cap how far it goes. For the unusual case where each commit really is
+  independent: one piece of work spread over a PR per commit can't be read or reverted as a
+  unit, so reach for `--until` instead when the commits belong together.
 
 Only a *prefix* of your history can be landed, because commits are a chain: you can land the
 first two and then the rest, but never the first and third while skipping the second. So order
