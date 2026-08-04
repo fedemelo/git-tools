@@ -1,2 +1,22 @@
 #!/bin/sh
-sed -i '' '/^Co-Authored-By:/d' "$1"
+# Backstop for the convention against AI attribution: a hook cannot be skipped the way an
+# instruction can.
+
+# git keeps the message on a zero exit, so any failure here has to propagate.
+set -e
+
+msg="$1"
+tmp="$msg.attribution-tmp"
+
+awk '
+{
+  # BSD sed accepts GNU sed /I and then matches nothing, so case folding happens here.
+  low = tolower($0)
+  if (low ~ /^[[:space:]]*(co-authored-by|assisted-by|generated-by):/) next
+  # index(): awk regex matching of multibyte literals is not portable.
+  if (index($0, "🤖") > 0) next
+  # The markdown link is required, so prose such as "Generated with the new codegen" stays.
+  if (low ~ /generated with \[/) next
+  print
+}' "$msg" > "$tmp"
+mv "$tmp" "$msg"
