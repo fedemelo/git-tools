@@ -17,7 +17,11 @@ This symlinks:
 - `hooks/commit-msg` into `~/.config/git/hooks/commit-msg`
 - `ignore` into `~/.config/git/ignore` (git reads this automatically as the global gitignore)
 
-Being symlinks, editing the installed path edits the repo file directly, so they can't drift out of sync with it. It does **not** touch `~/.gitconfig` — see below.
+and sets one config key: `core.hooksPath` to `~/.config/git/hooks`. Git has no default global
+hooks directory, so the `commit-msg` symlink above does nothing without it, and any other value
+leaves the hook silently dead — hence setting it rather than trusting it.
+
+Being symlinks, editing the installed path edits the repo file directly, so they can't drift out of sync with it. Apart from that one key, it does **not** touch `~/.gitconfig` — see below.
 
 ## `git land [title] [--until <commit>] [--each] [--force]`
 
