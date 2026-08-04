@@ -21,6 +21,10 @@ and sets one config key: `core.hooksPath` to `~/.config/git/hooks`. Git has no d
 hooks directory, so the `commit-msg` symlink above does nothing without it, and any other value
 leaves the hook silently dead — hence setting it rather than trusting it.
 
+It then proves the hook is live by committing a throwaway attribution trailer in a temp repo and
+checking it was stripped, exiting non-zero if it survives. Re-run `./install.sh` any time to
+re-check.
+
 Being symlinks, editing the installed path edits the repo file directly, so they can't drift out of sync with it. Apart from that one key, it does **not** touch `~/.gitconfig` — see below.
 
 ## `git land [title] [--until <commit>] [--each] [--force]`
