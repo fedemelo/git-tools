@@ -5,6 +5,22 @@ repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 mkdir -p "$HOME/.local/bin" "$HOME/.config/git/hooks"
 
+# Links whose target no longer exists are scripts and hooks renamed or removed upstream, which
+# nothing else cleans up. Only links pointing back into this repo are touched: ~/.local/bin is
+# shared with every other tool that installs itself there.
+pruned=0
+for link in "$HOME/.local/bin"/* "$HOME/.config/git/hooks"/*; do
+  if [ -L "$link" ] && [ ! -e "$link" ]; then
+    case "$(readlink "$link")" in
+      "$repo_dir"/*)
+        echo "Pruned stale link $(basename "$link") -> $(readlink "$link")"
+        rm "$link"
+        pruned=$((pruned + 1))
+        ;;
+    esac
+  fi
+done
+
 for script in "$repo_dir"/bin/*; do
   ln -sf "$script" "$HOME/.local/bin/$(basename "$script")"
 done
@@ -20,6 +36,7 @@ echo "Linked bin/* into ~/.local/bin (make sure it's on your PATH)"
 echo "Linked hooks/commit-msg into ~/.config/git/hooks/commit-msg"
 echo "Linked ignore into ~/.config/git/ignore"
 echo "Set core.hooksPath to ~/.config/git/hooks so that hook runs"
+[ "$pruned" -eq 0 ] || echo "Pruned $pruned stale link(s)"
 
 # The symlink and core.hooksPath are separate pieces, and a mismatch leaves the hook inert
 # without any error, so make a throwaway commit and confirm the trailer is really stripped.
