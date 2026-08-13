@@ -27,8 +27,13 @@ hooks directory, so the `commit-msg` symlink above does nothing without it, and 
 leaves the hook silently dead — hence setting it rather than trusting it.
 
 It then proves the hook is live by committing a throwaway attribution trailer in a temp repo and
-checking it was stripped, exiting non-zero if it survives. Re-run `./install.sh` any time to
-re-check.
+checking it was stripped, exiting non-zero if it survives.
+
+**Re-run `./install.sh` after every pull.** Editing an existing script takes effect immediately,
+since the installed paths are symlinks, but one *added* upstream has no link until you re-run,
+and one renamed or removed upstream leaves a link pointing nowhere. Re-running creates the
+first and prunes the second, touching only links that point back into this repo, since
+`~/.local/bin` is shared with every other tool that installs itself there.
 
 Being symlinks, editing the installed path edits the repo file directly, so they can't drift out of sync with it. Apart from that one key, it does **not** touch `~/.gitconfig` — see below.
 
@@ -69,11 +74,13 @@ them is replayed onto the new upstream head, so a partial land never strands loc
 
 ```sh
 tests/git-land.test.sh
+tests/install.test.sh
 ```
 
-No dependencies and no network: the remote is a local bare repo and `gh` is a stub earlier on
-`PATH`, including a stand-in for GitHub's rebase-merge so the branch-protection fallback is
-covered too.
+No dependencies and no network. For `git-land`, the remote is a local bare repo and `gh` is a
+stub earlier on `PATH`, including a stand-in for GitHub's rebase-merge so the
+branch-protection fallback is covered too. For `install.sh`, every case installs into a
+throwaway `HOME`, so running the suite never touches your real `~/.local/bin` or `~/.gitconfig`.
 
 ## `git todo <title...> [-b|--body <body>]`
 
