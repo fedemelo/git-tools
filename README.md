@@ -74,13 +74,15 @@ them is replayed onto the new upstream head, so a partial land never strands loc
 
 ```sh
 tests/git-land.test.sh
+tests/git-todo.test.sh
 tests/install.test.sh
 ```
 
 No dependencies and no network. For `git-land`, the remote is a local bare repo and `gh` is a
 stub earlier on `PATH`, including a stand-in for GitHub's rebase-merge so the
-branch-protection fallback is covered too. For `install.sh`, every case installs into a
-throwaway `HOME`, so running the suite never touches your real `~/.local/bin` or `~/.gitconfig`.
+branch-protection fallback is covered too. `git-todo` uses the same stub, recording the
+arguments it would have sent. For `install.sh`, every case installs into a throwaway `HOME`, so
+running the suite never touches your real `~/.local/bin` or `~/.gitconfig`.
 
 ## `git todo <title...> [-b|--body <body>]`
 
