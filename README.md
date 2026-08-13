@@ -4,6 +4,11 @@ Personal git workflow tooling: two subcommands plus supporting global config.
 
 These tools also back the `land` / `todo` skills in [claude-config](https://github.com/fedemelo/claude-config), so install this repo first if you use those.
 
+## Prerequisites
+
+- The [`gh` CLI](https://cli.github.com), authenticated with `gh auth login`. Both subcommands are wrappers around it and fail with a bare `gh: command not found` otherwise.
+- `~/.gitconfig`, filled in from `gitconfig.example` as described below. `install.sh` sets only `core.hooksPath`, so a fresh machine still has no `user.email` and every commit fails until you do this.
+
 ## Install
 
 ```sh
