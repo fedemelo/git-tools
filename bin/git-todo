@@ -21,7 +21,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-title="${args[*]}"
+# :- so that a body with no title reaches the check below: expanding an empty array under
+# `set -u` is an unbound-variable error on bash 3.2, which ships with macOS.
+title="${args[*]:-}"
 
 if [ -z "$title" ]; then
   echo "git-todo: missing title" >&2
