@@ -1,5 +1,10 @@
 # git-tools
 
+> **New machine, or after any pull:** `git pull && ./install.sh` here, *before* doing the same in
+> [claude-config](https://github.com/fedemelo/claude-config). Editing an existing script takes
+> effect immediately through the symlinks, but adding or removing one does not, and the skills
+> over there instruct flags that only a current `git-land` has.
+
 Personal git workflow tooling: two subcommands plus supporting global config.
 
 These tools also back the `land` / `todo` skills in [claude-config](https://github.com/fedemelo/claude-config), so install this repo first if you use those.
