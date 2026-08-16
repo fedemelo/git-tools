@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    # macOS, not Linux: these tools run on macOS, and the traps the suites cover are specific
+    # to it. Empty-array expansion under `set -u` fails on bash 3.2 and passes on bash 5, and
+    # BSD sed rejects GNU regex extensions that GNU sed accepts, so a Linux runner would report
+    # green on both of the bugs these suites were written for.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Globbed rather than listed, so a suite added later runs without editing this file.
+      # Every suite is collected before failing, so one run reports all of them.
+      - name: Run test suites
+        run: |
+          status=0
+          for suite in tests/*.test.sh; do
+            echo "::group::$suite"
+            "$suite" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
