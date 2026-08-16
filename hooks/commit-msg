@@ -10,7 +10,8 @@ tmp="$msg.attribution-tmp"
 
 awk '
 {
-  # BSD sed accepts GNU sed /I and then matches nothing, so case folding happens here.
+  # awk rather than sed: listing the trailers in one sed address needs \| alternation, a GNU
+  # extension that BSD sed parses without matching anything, leaving the hook a silent no-op.
   low = tolower($0)
   if (low ~ /^[[:space:]]*(co-authored-by|assisted-by|generated-by):/) next
   # index(): awk regex matching of multibyte literals is not portable.
