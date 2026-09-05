@@ -1,0 +1,458 @@
+#!/usr/bin/env python3
+"""Print every piece of review feedback on a pull request, grouped and ready to triage.
+
+GitHub keeps review feedback in three places, and no two of them overlap: inline review
+threads, the body attached to a submitted review, and conversation comments. No single REST
+or `gh` command returns all three, so fetching one or two looks complete and is not. The
+body attached to an approval is the one most often lost that way, and it regularly carries a
+suggestion nobody can reply to.
+
+Written in Python rather than bash like its siblings because the work here is grouping and
+formatting a JSON document, which `gh -q` alone cannot express.
+"""
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+from collections import Counter
+from datetime import datetime, timezone
+
+TOOL = "git-review-feedback"
+
+FIELDS = """
+fragment reviewFields on PullRequestReview {
+  author { login kind:__typename } state body submittedAt url
+}
+fragment commentFields on IssueComment {
+  author { login kind:__typename } body createdAt url
+}
+fragment threadFields on PullRequestReviewThread {
+  isResolved isOutdated path line originalLine startLine subjectType
+  comments(first:50) {
+    pageInfo { hasNextPage }
+    nodes { author { login kind:__typename } body createdAt diffHunk url }
+  }
+}
+"""
+
+COMBINED_QUERY = (
+    FIELDS
+    + """
+query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){ pullRequest(number:$number){
+    commits(last:1){ nodes{ commit{ oid committedDate }}}
+    reviews(first:100){ pageInfo{ hasNextPage endCursor } nodes{ ...reviewFields }}
+    comments(first:100){ pageInfo{ hasNextPage endCursor } nodes{ ...commentFields }}
+    reviewThreads(first:100){ pageInfo{ hasNextPage endCursor } nodes{ ...threadFields }}
+  }}}
+"""
+)
+
+# One query covers any PR that fits in a page, which is nearly all of them. A connection with
+# more is followed up on its own rather than re-fetching the other two.
+PAGE_QUERIES = {
+    connection: FIELDS
+    + f"""
+query($owner:String!,$name:String!,$number:Int!,$after:String!){{
+  repository(owner:$owner,name:$name){{ pullRequest(number:$number){{
+    {connection}(first:100,after:$after){{ pageInfo{{ hasNextPage endCursor }} nodes{{ ...{fragment} }}}}
+  }}}}}}
+"""
+    for connection, fragment in (
+        ("reviews", "reviewFields"),
+        ("comments", "commentFields"),
+        ("reviewThreads", "threadFields"),
+    )
+}
+
+PR_URL = re.compile(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)")
+
+INVISIBLE = re.compile(r"[​‌‍﻿]")
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+PICTURE = re.compile(r"<picture>.*?</picture>", re.DOTALL)
+VOID_TAG = re.compile(r"<(?:img|source|br)\b[^>]*/?>", re.DOTALL)
+DETAILS_TAG = re.compile(r"</?details>")
+ANCHOR = re.compile(r"<a\b[^>]*>(.*?)</a>", re.DOTALL)
+TRAILING_SPACE = re.compile(r"[ \t]+$", re.MULTILINE)
+SUMMARY = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
+MARKUP = re.compile(r"</?(?:strong|em|b|i|kbd|sub|sup)>")
+BLANK_RUN = re.compile(r"\n{3,}")
+
+HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+RULE = "═" * 78
+
+
+def fail(message):
+    sys.exit(f"{TOOL}: {message}")
+
+
+def gh(*arguments):
+    if shutil.which("gh") is None:
+        fail("'gh' is not installed (not found on PATH)")
+    result = subprocess.run(["gh", *arguments], capture_output=True, text=True)
+    if result.returncode != 0:
+        fail((result.stderr.strip() or f"gh {' '.join(arguments)} failed").splitlines()[0])
+    return result.stdout
+
+
+def gh_json(*arguments):
+    output = gh(*arguments)
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as error:
+        fail(f"gh returned output that is not JSON ({error})")
+
+
+def resolve_target(spec):
+    """The PR the user meant: the one named, or else the current branch's.
+
+    `gh pr view` already accepts a number, a URL or a branch, and already defaults to the
+    current branch, so the only work here is reading the owner and repo back out of the URL
+    it returns. Taking them from the URL rather than from the current directory is what lets
+    a PR in another repo be addressed by link.
+    """
+    arguments = ["pr", "view", "--json", "number,title,url,reviewDecision,isDraft,headRefName"]
+    if spec:
+        arguments.insert(2, spec)
+    target = gh_json(*arguments)
+
+    match = PR_URL.search(target.get("url", ""))
+    if not match:
+        fail(f"could not read the owner and repository from {target.get('url')!r}")
+    target["owner"], target["repo"] = match.group(1), match.group(2)
+    return target
+
+
+def query(text, target, **variables):
+    arguments = [
+        "api",
+        "graphql",
+        "-F",
+        f"owner={target['owner']}",
+        "-F",
+        f"name={target['repo']}",
+        "-F",
+        f"number={target['number']}",
+        "-f",
+        f"query={text}",
+    ]
+    for name, value in variables.items():
+        arguments += ["-f", f"{name}={value}"]
+
+    payload = gh_json(*arguments)
+    if "errors" in payload:
+        fail("; ".join(error.get("message", "unknown error") for error in payload["errors"]))
+    return payload["data"]["repository"]["pullRequest"]
+
+
+def fetch(target):
+    pull_request = query(COMBINED_QUERY, target)
+
+    collected = {}
+    for connection in PAGE_QUERIES:
+        nodes = list(pull_request[connection]["nodes"])
+        info = pull_request[connection]["pageInfo"]
+        while info["hasNextPage"]:
+            page = query(PAGE_QUERIES[connection], target, after=info["endCursor"])[connection]
+            nodes += page["nodes"]
+            info = page["pageInfo"]
+        collected[connection] = nodes
+
+    head = pull_request["commits"]["nodes"]
+    collected["head"] = head[0]["commit"] if head else None
+    return collected
+
+
+def clean(body, raw):
+    if raw:
+        return (body or "").strip()
+
+    text = INVISIBLE.sub("", body or "")
+    text = HTML_COMMENT.sub("", text)
+    text = PICTURE.sub("", text)
+    text = VOID_TAG.sub("", text)
+    text = SUMMARY.sub(r"\1", text)
+    text = DETAILS_TAG.sub("", text)
+    text = ANCHOR.sub(r"\1", text)
+    text = MARKUP.sub("", text)
+    text = TRAILING_SPACE.sub("", text)
+    return BLANK_RUN.sub("\n\n", text).strip()
+
+
+def moment(timestamp):
+    if not timestamp:
+        return ""
+    return timestamp.replace("T", " ").rstrip("Z")[:16]
+
+
+def parse_moment(timestamp):
+    if not timestamp:
+        return None
+    return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def author_of(node):
+    author = node.get("author") or {}
+    return author.get("login") or "ghost", author.get("kind") or "User"
+
+
+def tagged(login, kind):
+    return f"{login} [bot]" if kind == "Bot" else login
+
+
+def hunk_lines(diff_hunk, anchor, context=6):
+    """The last few lines of the hunk a comment is anchored to, numbered as in the new file.
+
+    GitHub anchors an inline comment to the final line of the hunk it sends, so numbering
+    runs backwards from the comment's own line. Deleted lines exist only in the old file and
+    so carry no number of their own.
+    """
+    if not diff_hunk:
+        return []
+
+    lines = [line for line in diff_hunk.splitlines() if not HUNK_HEADER.match(line)]
+    if not lines:
+        return []
+
+    numbered, number = [], anchor
+    for line in reversed(lines):
+        if line.startswith("-"):
+            numbered.append((None, line))
+        else:
+            numbered.append((number, line))
+            if number is not None:
+                number -= 1
+    numbered.reverse()
+    return numbered[-context:]
+
+
+def indent(text, prefix):
+    return "\n".join(f"{prefix}{line}" if line else prefix.rstrip() for line in text.splitlines())
+
+
+def anchor_of(thread):
+    line = thread.get("line") or thread.get("originalLine")
+    if thread.get("subjectType") == "FILE" or line is None:
+        return thread["path"], None
+    return thread["path"], line
+
+
+def stale(timestamp, head):
+    """Whether a point was written before the code that is there now.
+
+    GitHub computes this for threads and calls it outdated. Nothing computes it for a review
+    body or a conversation comment, so comparing against the head commit is the only signal
+    available, and it is a hint rather than a verdict: the commit may not have touched what
+    the comment is about.
+    """
+    if not head:
+        return False
+    written, committed = parse_moment(timestamp), parse_moment(head["committedDate"])
+    return bool(written and committed and written < committed)
+
+
+def wanted(login, authors):
+    return not authors or login.lower() in authors
+
+
+def collect(data, options):
+    head = data["head"]
+    authors = {name.strip().lower() for name in options.author.split(",") if name.strip()}
+
+    reviews = []
+    for node in data["reviews"]:
+        login, kind = author_of(node)
+        body = clean(node.get("body"), options.raw)
+        if not body or node["state"] == "PENDING" or not wanted(login, authors):
+            continue
+        reviews.append(
+            {
+                "id": f"R{len(reviews) + 1}",
+                "author": login,
+                "kind": kind,
+                "state": node["state"],
+                "at": node.get("submittedAt"),
+                "stale": stale(node.get("submittedAt"), head),
+                "url": node.get("url"),
+                "body": body,
+            }
+        )
+
+    threads, hidden = [], 0
+    for node in data["reviewThreads"]:
+        comments = node["comments"]["nodes"]
+        if not comments:
+            continue
+        starter, kind = author_of(comments[0])
+        if not wanted(starter, authors):
+            continue
+        if node["isResolved"] and not options.all:
+            hidden += 1
+            continue
+
+        path, line = anchor_of(node)
+        threads.append(
+            {
+                "id": f"T{len(threads) + 1}",
+                "path": path,
+                "line": line,
+                "author": starter,
+                "kind": kind,
+                "resolved": node["isResolved"],
+                "outdated": node["isOutdated"],
+                "truncated": node["comments"]["pageInfo"]["hasNextPage"],
+                "hunk": hunk_lines(comments[0].get("diffHunk"), line),
+                "comments": [
+                    {
+                        "author": tagged(*author_of(comment)),
+                        "at": comment.get("createdAt"),
+                        "url": comment.get("url"),
+                        "body": clean(comment.get("body"), options.raw),
+                    }
+                    for comment in comments
+                ],
+            }
+        )
+
+    conversation = []
+    for node in data["comments"]:
+        login, kind = author_of(node)
+        body = clean(node.get("body"), options.raw)
+        if not body or not wanted(login, authors):
+            continue
+        conversation.append(
+            {
+                "id": f"C{len(conversation) + 1}",
+                "author": login,
+                "kind": kind,
+                "at": node.get("createdAt"),
+                "stale": stale(node.get("createdAt"), head),
+                "url": node.get("url"),
+                "body": body,
+            }
+        )
+
+    return reviews, threads, hidden, conversation
+
+
+def counts_line(*groups):
+    """A thread counts once however many replies it has: one thread is one point to answer."""
+    tally = Counter(tagged(item["author"], item["kind"]) for group in groups for item in group)
+    if not tally:
+        return "nothing to address"
+    ranked = sorted(tally.items(), key=lambda pair: (-pair[1], pair[0]))
+    total = sum(tally.values())
+    noun = "point" if total == 1 else "points"
+    return f"{total} {noun} to triage  ·  " + "  ·  ".join(f"{name} {count}" for name, count in ranked)
+
+
+def render(target, data, reviews, threads, hidden, conversation):
+    head = data["head"]
+    out = [
+        f"PR #{target['number']}  {target['title']}  ·  {target['owner']}/{target['repo']}",
+    ]
+    if head:
+        out.append(
+            f"head {head['oid'][:7]} committed {moment(head['committedDate'])}"
+            f"  ·  review decision: {target.get('reviewDecision') or 'none'}"
+        )
+    out.append(counts_line(reviews, threads, conversation))
+
+    out += ["", RULE, f"REVIEW SUMMARIES ({len(reviews)})", RULE]
+    out.append("The body of a submitted review. It takes no inline reply, so anything real in")
+    out.append("it is answered in code and anything else in your response. An approval counts.")
+    if not reviews:
+        out.append("\nnone")
+    for review in reviews:
+        flags = "  ⚠ written before the current head" if review["stale"] else ""
+        who = tagged(review["author"], review["kind"])
+        out.append(f"\n{review['id']}  {who}  [{review['state']}]  {moment(review['at'])}{flags}")
+        out.append(indent(review["body"], "    "))
+
+    label = f"INLINE THREADS ({len(threads)}"
+    label += f", {hidden} resolved and hidden" if hidden else ""
+    out += ["", RULE, label + ")", RULE]
+    if not threads:
+        out.append("none")
+    for thread in threads:
+        where = f"{thread['path']}:{thread['line']}" if thread["line"] else f"{thread['path']} (whole file)"
+        flags = []
+        if thread["resolved"]:
+            flags.append("resolved")
+        if thread["outdated"]:
+            flags.append("⚠ outdated, the code moved since")
+        if thread["truncated"]:
+            flags.append("⚠ more replies than were fetched")
+        suffix = "  ·  " + ", ".join(flags) if flags else ""
+
+        out.append(f"\n{thread['id']}  {where}{suffix}")
+        for number, text in thread["hunk"]:
+            gutter = f"{number:>6}" if number else "     -"
+            marker = "→" if number and number == thread["line"] else " "
+            out.append(f"    {marker}{gutter} | {text}")
+        for position, comment in enumerate(thread["comments"]):
+            prefix = "    " if position == 0 else "      └ "
+            out.append(f"{prefix}{comment['author']}  {moment(comment['at'])}")
+            out.append(indent(comment["body"], "        "))
+
+    out += ["", RULE, f"CONVERSATION COMMENTS ({len(conversation)})", RULE]
+    if not conversation:
+        out.append("none")
+    for comment in conversation:
+        flags = "  ⚠ written before the current head" if comment["stale"] else ""
+        out.append(f"\n{comment['id']}  {tagged(comment['author'], comment['kind'])}  {moment(comment['at'])}{flags}")
+        out.append(indent(comment["body"], "    "))
+
+    return "\n".join(out)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog=TOOL,
+        description="Print all three sources of review feedback on a pull request.",
+    )
+    parser.add_argument("pr", nargs="?", default="", help="PR number, URL or branch (default: the current branch's PR)")
+    parser.add_argument("--all", action="store_true", help="include resolved threads, which are hidden by default")
+    parser.add_argument("--author", default="", help="only points raised by these logins (comma-separated)")
+    parser.add_argument("--json", action="store_true", help="emit the same data as JSON")
+    parser.add_argument("--raw", action="store_true", help="keep bodies verbatim, without stripping bot markup")
+    options = parser.parse_args()
+
+    target = resolve_target(options.pr)
+    data = fetch(target)
+    reviews, threads, hidden, conversation = collect(data, options)
+
+    if options.json:
+        print(
+            json.dumps(
+                {
+                    "pr": {
+                        "number": target["number"],
+                        "title": target["title"],
+                        "url": target["url"],
+                        "owner": target["owner"],
+                        "repo": target["repo"],
+                        "branch": target.get("headRefName"),
+                        "draft": target.get("isDraft"),
+                        "reviewDecision": target.get("reviewDecision"),
+                        "head": data["head"],
+                    },
+                    "reviews": reviews,
+                    "threads": threads,
+                    "resolvedHidden": hidden,
+                    "comments": conversation,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    print(render(target, data, reviews, threads, hidden, conversation))
+
+
+if __name__ == "__main__":
+    main()
