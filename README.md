@@ -5,13 +5,14 @@
 > effect immediately through the symlinks, but adding or removing one does not, and the skills
 > over there instruct flags that only a current `git-land` has.
 
-Personal git workflow tooling: two subcommands plus supporting global config.
+Personal git workflow tooling: three subcommands plus supporting global config.
 
-These tools also back the `land` / `todo` skills in [claude-config](https://github.com/fedemelo/claude-config), so install this repo first if you use those.
+These tools also back the `land` / `todo` / PR-review skills in [claude-config](https://github.com/fedemelo/claude-config), so install this repo first if you use those.
 
 ## Prerequisites
 
-- The [`gh` CLI](https://cli.github.com), authenticated with `gh auth login`. Both subcommands are wrappers around it and fail with a bare `gh: command not found` otherwise.
+- The [`gh` CLI](https://cli.github.com), authenticated with `gh auth login`. Every subcommand is a wrapper around it. `git-land` and `git-todo` fail with a bare `gh: command not found` without it; `git-review-feedback` says so itself.
+- `python3`, for `git-review-feedback` alone. macOS ships it, and nothing here needs a package installed with it.
 - `~/.gitconfig`, filled in from `gitconfig.example` as described below. `install.sh` sets only `core.hooksPath`, so a fresh machine still has no `user.email` and every commit fails until you do this.
 
 ## Install
@@ -23,7 +24,7 @@ cd git-tools
 ```
 
 This symlinks:
-- `bin/git-land`, `bin/git-todo` into `~/.local/bin` (make sure that's on your `PATH`)
+- `bin/git-land`, `bin/git-todo`, `bin/git-review-feedback` into `~/.local/bin` (make sure that's on your `PATH`)
 - `hooks/commit-msg` into `~/.config/git/hooks/commit-msg`
 - `ignore` into `~/.config/git/ignore` (git reads this automatically as the global gitignore)
 
@@ -79,6 +80,7 @@ them is replayed onto the new upstream head, so a partial land never strands loc
 
 ```sh
 tests/git-land.test.sh
+tests/git-review-feedback.test.sh
 tests/git-todo.test.sh
 tests/install.test.sh
 ```
@@ -86,14 +88,48 @@ tests/install.test.sh
 No dependencies and no network. For `git-land`, the remote is a local bare repo and `gh` is a
 stub earlier on `PATH`, including a stand-in for GitHub's rebase-merge so the
 branch-protection fallback is covered too. `git-todo` uses the same stub, recording the
-arguments it would have sent. For `install.sh`, every case installs into a throwaway `HOME`, so
-running the suite never touches your real `~/.local/bin` or `~/.gitconfig`.
+arguments it would have sent. `git-review-feedback` uses a stub that answers from canned
+fixtures, so what is asserted is how a review is grouped and printed rather than how any real PR
+happens to look today. For `install.sh`, every case installs into a throwaway `HOME`, so running
+the suite never touches your real `~/.local/bin` or `~/.gitconfig`.
 
 ## `git todo <title...> [-b|--body <body>]`
 
 Opens a GitHub issue in the current repo, assigned to you, no browser needed. Prints the issue
 number and a reminder that `Fixes #N` in a later commit auto-closes it once that commit lands
 on the default branch.
+
+## `git review-feedback [<pr>] [--all] [--author <logins>] [--json] [--raw]`
+
+Prints every piece of review feedback on a pull request, grouped and ready to work through. The
+PR is a number, a URL or a branch, and defaults to the current branch's.
+
+GitHub keeps that feedback in three places, and no two of them overlap: inline review threads,
+the body attached to a submitted review, and conversation comments. No single `gh` command
+returns all three — `gh pr view --json comments` is conversation comments alone, and a review
+body is not a thread — so reading one or two looks complete and is not. The body attached to an
+*approval* is the one most often lost that way, and it regularly carries a request that no
+thread mentions and that nobody can reply to. One query returns all three here, so skipping a
+source is not something a caller can do by accident.
+
+Each point gets an id (`R1`, `T1`, `C1`) to answer against, and each thread arrives with the
+lines of the diff it is anchored to, numbered as in the file. Bots are told from humans by their
+GitHub account type rather than by the shape of their login, since GitHub's own reviewer posts
+as `copilot-pull-request-reviewer`.
+
+By default it skips resolved threads, empty review bodies and your own unsubmitted `PENDING`
+review, since none of those is a point anybody has to answer, and it says how many resolved
+threads it hid. Bot markup that carries no information — HTML comments, `<picture>` blocks,
+zero-width spaces — is stripped so the finding is readable.
+
+| Flag | Effect |
+|---|---|
+| `--all` | include resolved threads, labelled as resolved |
+| `--author <logins>` | only points raised by these logins, comma-separated |
+| `--json` | the same data as JSON, for a tool to consume |
+| `--raw` | leave bodies verbatim, stripping no markup |
+
+It only ever reads. Nothing it does puts anything in front of a person on the PR.
 
 ## `~/.gitconfig`
 
