@@ -74,7 +74,17 @@ cat > "$ROOT/graphql.json" <<'JSON'
             "url": "https://github.com/fedemelo/demo/pull/7#t1" },
           { "author": { "login": "fedemelo", "kind": "User" },
             "body": "Good catch, it is tri-state now.", "createdAt": "2026-09-04T17:55:00Z",
+            "diffHunk": "", "url": "" },
+          { "author": { "login": "fedemelo", "kind": "User" }, "state": "PENDING",
+            "body": "draft reply nobody has seen", "createdAt": "2026-09-05T08:00:00Z",
             "diffHunk": "", "url": "" }
+        ]}},
+      { "isResolved": false, "isOutdated": false, "path": "auth/draft.go", "line": 3,
+        "originalLine": 3, "startLine": null, "subjectType": "LINE",
+        "comments": { "pageInfo": { "hasNextPage": false }, "nodes": [
+          { "author": { "login": "fedemelo", "kind": "User" }, "state": "PENDING",
+            "body": "draft thread nobody has seen", "createdAt": "2026-09-05T08:01:00Z",
+            "diffHunk": "@@ -1,2 +1,3 @@\n old\n+new", "url": "" }
         ]}},
       { "isResolved": true, "isOutdated": true, "path": "auth/refresh.go", "line": null,
         "originalLine": 12, "startLine": null, "subjectType": "LINE",
@@ -116,6 +126,13 @@ echo "=== a review nobody has to answer is not a point ==="
 check_lacks "an empty-bodied approval is left out" "$out" "quietone"
 check_lacks "an unsubmitted PENDING review is left out" "$out" "half-written note to self"
 check_has "so the tally counts the four real points" "$out" "4 points to triage"
+
+echo "=== your own unsubmitted comments are not feedback yet, even with --all ==="
+for flags in "" "--all"; do
+  shown="$("$TOOL" $flags 2>/dev/null)"
+  check_lacks "a pending reply in a posted thread is left out ${flags:-by default}" "$shown" "draft reply nobody has seen"
+  check_lacks "a thread holding only pending comments is left out ${flags:-by default}" "$shown" "auth/draft.go"
+done
 
 echo "=== resolved threads are out of the way unless asked for ==="
 check_lacks "a resolved thread is hidden by default" "$out" "Settled weeks ago."
