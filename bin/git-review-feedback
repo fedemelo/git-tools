@@ -33,7 +33,7 @@ fragment threadFields on PullRequestReviewThread {
   isResolved isOutdated path line originalLine startLine subjectType
   comments(first:50) {
     pageInfo { hasNextPage }
-    nodes { author { login kind:__typename } body createdAt diffHunk url }
+    nodes { author { login kind:__typename } body createdAt diffHunk url state }
   }
 }
 """
@@ -284,7 +284,7 @@ def collect(data, options):
 
     threads, hidden = [], 0
     for node in data["reviewThreads"]:
-        comments = node["comments"]["nodes"]
+        comments = [comment for comment in node["comments"]["nodes"] if comment.get("state") != "PENDING"]
         if not comments:
             continue
         starter, kind = author_of(comments[0])
