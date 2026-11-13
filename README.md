@@ -117,9 +117,10 @@ lines of the diff it is anchored to, numbered as in the file. Bots are told from
 GitHub account type rather than by the shape of their login, since GitHub's own reviewer posts
 as `copilot-pull-request-reviewer`.
 
-By default it skips resolved threads, empty review bodies and your own unsubmitted `PENDING`
-review, since none of those is a point anybody has to answer, and it says how many resolved
-threads it hid. Bot markup that carries no information — HTML comments, `<picture>` blocks,
+By default it skips resolved threads and empty review bodies, since neither is a point anybody
+has to answer, and it says how many resolved threads it hid. Your own unsubmitted `PENDING`
+review and its comments are always left out, even with `--all`: nobody else can see them, so
+they are not part of the conversation yet. Bot markup that carries no information — HTML comments, `<picture>` blocks,
 zero-width spaces — is stripped so the finding is readable.
 
 | Flag | Effect |
