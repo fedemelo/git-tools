@@ -5,14 +5,14 @@
 > effect immediately through the symlinks, but adding or removing one does not, and the skills
 > over there instruct flags that only a current `git-land` has.
 
-Personal git workflow tooling: three subcommands plus supporting global config.
+Personal git workflow tooling: four subcommands plus supporting global config.
 
 These tools also back the `land` / `todo` / PR-review skills in [agent-config](https://github.com/fedemelo/agent-config), so install this repo first if you use those.
 
 ## Prerequisites
 
-- The [`gh` CLI](https://cli.github.com), authenticated with `gh auth login`. Every subcommand is a wrapper around it. `git-land` and `git-todo` fail with a bare `gh: command not found` without it; `git-review-feedback` says so itself.
-- `python3`, for `git-review-feedback` alone. macOS ships it, and nothing here needs a package installed with it.
+- The [`gh` CLI](https://cli.github.com), authenticated with `gh auth login`. Every subcommand is a wrapper around it. `git-land` and `git-todo` fail with a bare `gh: command not found` without it; `git-review-feedback` and `git-review-reply` say so themselves.
+- `python3`, for `git-review-feedback` and `git-review-reply` alone. macOS ships it, and nothing here needs a package installed with it.
 - `~/.gitconfig`, filled in from `gitconfig.example` as described below. `install.sh` sets only `core.hooksPath`, so a fresh machine still has no `user.email` and every commit fails until you do this.
 
 ## Install
@@ -24,9 +24,13 @@ cd git-tools
 ```
 
 This symlinks:
-- `bin/git-land`, `bin/git-todo`, `bin/git-review-feedback` into `~/.local/bin` (make sure that's on your `PATH`)
+- `bin/git-land`, `bin/git-todo`, `bin/git-review-feedback`, `bin/git-review-reply` into `~/.local/bin` (make sure that's on your `PATH`)
 - `hooks/commit-msg` into `~/.config/git/hooks/commit-msg`
 - `ignore` into `~/.config/git/ignore` (git reads this automatically as the global gitignore)
+
+The Python subcommands share their `gh` code from `lib/git_tools/`, which they find beside
+`bin/` by following their own symlink. A copy of either one elsewhere needs `lib/` copied beside
+its `bin/` too.
 
 and sets one config key: `core.hooksPath` to `~/.config/git/hooks`. Git has no default global
 hooks directory, so the `commit-msg` symlink above does nothing without it, and any other value
@@ -81,6 +85,7 @@ them is replayed onto the new upstream head, so a partial land never strands loc
 ```sh
 tests/git-land.test.sh
 tests/git-review-feedback.test.sh
+tests/git-review-reply.test.sh
 tests/git-todo.test.sh
 tests/install.test.sh
 ```
@@ -90,8 +95,10 @@ stub earlier on `PATH`, including a stand-in for GitHub's rebase-merge so the
 branch-protection fallback is covered too. `git-todo` uses the same stub, recording the
 arguments it would have sent. `git-review-feedback` uses a stub that answers from canned
 fixtures, so what is asserted is how a review is grouped and printed rather than how any real PR
-happens to look today. For `install.sh`, every case installs into a throwaway `HOME`, so running
-the suite never touches your real `~/.local/bin` or `~/.gitconfig`.
+happens to look today. `git-review-reply` uses a stub that records every call and the body it
+would have posted, and runs in a throwaway repo whose `HEAD` the stub names as the PR's head.
+For `install.sh`, every case installs into a throwaway `HOME`, so running the suite never
+touches your real `~/.local/bin` or `~/.gitconfig`.
 
 ## `git todo <title...> [-b|--body <body>]`
 
@@ -131,6 +138,51 @@ zero-width spaces — is stripped so the finding is readable.
 | `--raw` | leave bodies verbatim, stripping no markup |
 
 It only ever reads. Nothing it does puts anything in front of a person on the PR.
+
+## `git review-reply <file> [--dry-run]`
+
+Posts every reply to the review feedback on your PR at once, then turns the PR into a draft.
+Replies drafted one by one would otherwise go up one by one, and reviewers would read them before
+you had checked them. Here they all go up together, after your work is pushed, and the PR becomes
+a draft within seconds, so you can revise them before anyone else looks.
+
+The file names the PR and the replies, in the order they are posted:
+
+```json
+{
+  "pr": "https://github.com/owner/repo/pull/7",
+  "replies": [
+    {"to": "https://github.com/owner/repo/pull/7#discussion_r123", "body": "Renamed it in 1a2b3c4."},
+    {"to": "https://github.com/owner/repo/pull/7#pullrequestreview-456", "quote": "rename clip to useClipboard", "body": "Done in 1a2b3c4."}
+  ]
+}
+```
+
+Each `to` is a `url` that `git review-feedback --json` prints. A thread comment
+(`#discussion_r…`) gets a reply in its thread, and takes no `quote`. A review body
+(`#pullrequestreview-…`) or a conversation comment (`#issuecomment-…`) cannot be replied to on
+GitHub, so it gets a new conversation comment that quotes it first. Its `quote` is required.
+
+It refuses the whole file, posting nothing and listing every problem, if any body or quote:
+- mentions someone, like `@ana` or `@coderabbitai`. A mention inside backticks or a code block
+  is fine, and so is an email address.
+- has a line starting with `/`, which bots read as a command.
+- is empty, or answers the same point twice, or points at another PR.
+
+It also refuses unless the PR is open and your checkout is clean and its `HEAD` is the PR's
+head, so no reply goes up before the commit it talks about.
+
+If a post fails, it stops there, still turns the PR into a draft, and says which replies went
+up and which did not. If the PR is already a draft, it stays one. A file with no replies posts
+nothing and leaves the PR alone.
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | print each reply as it would be posted, and post nothing |
+
+It prints what it posted as JSON: `{"pr", "posted": [{"to", "url", "id"}], "draft"}`, where
+`draft` is `converted` or `already`. It never resolves a thread, reacts, requests a review, or
+edits or deletes anything.
 
 ## `~/.gitconfig`
 
