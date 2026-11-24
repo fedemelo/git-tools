@@ -13,12 +13,15 @@ formatting a JSON document, which `gh -q` alone cannot express.
 
 import argparse
 import json
+import os
 import re
-import shutil
-import subprocess
 import sys
 from collections import Counter
 from datetime import datetime, timezone
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "lib"))
+from git_tools.github import fail, gh_json, resolve_target  # noqa: E402
 
 TOOL = "git-review-feedback"
 
@@ -68,8 +71,6 @@ query($owner:String!,$name:String!,$number:Int!,$after:String!){{
     )
 }
 
-PR_URL = re.compile(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)")
-
 INVISIBLE = re.compile(r"[​‌‍﻿]")
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 PICTURE = re.compile(r"<picture>.*?</picture>", re.DOTALL)
@@ -84,47 +85,6 @@ BLANK_RUN = re.compile(r"\n{3,}")
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 RULE = "═" * 78
-
-
-def fail(message):
-    sys.exit(f"{TOOL}: {message}")
-
-
-def gh(*arguments):
-    if shutil.which("gh") is None:
-        fail("'gh' is not installed (not found on PATH)")
-    result = subprocess.run(["gh", *arguments], capture_output=True, text=True)
-    if result.returncode != 0:
-        fail((result.stderr.strip() or f"gh {' '.join(arguments)} failed").splitlines()[0])
-    return result.stdout
-
-
-def gh_json(*arguments):
-    output = gh(*arguments)
-    try:
-        return json.loads(output)
-    except json.JSONDecodeError as error:
-        fail(f"gh returned output that is not JSON ({error})")
-
-
-def resolve_target(spec):
-    """The PR the user meant: the one named, or else the current branch's.
-
-    `gh pr view` already accepts a number, a URL or a branch, and already defaults to the
-    current branch, so the only work here is reading the owner and repo back out of the URL
-    it returns. Taking them from the URL rather than from the current directory is what lets
-    a PR in another repo be addressed by link.
-    """
-    arguments = ["pr", "view", "--json", "number,title,url,reviewDecision,isDraft,headRefName"]
-    if spec:
-        arguments.insert(2, spec)
-    target = gh_json(*arguments)
-
-    match = PR_URL.search(target.get("url", ""))
-    if not match:
-        fail(f"could not read the owner and repository from {target.get('url')!r}")
-    target["owner"], target["repo"] = match.group(1), match.group(2)
-    return target
 
 
 def query(text, target, **variables):
@@ -422,7 +382,7 @@ def main():
     parser.add_argument("--raw", action="store_true", help="keep bodies verbatim, without stripping bot markup")
     options = parser.parse_args()
 
-    target = resolve_target(options.pr)
+    target = resolve_target(options.pr, "number,title,url,reviewDecision,isDraft,headRefName")
     data = fetch(target)
     reviews, threads, hidden, conversation = collect(data, options)
 
