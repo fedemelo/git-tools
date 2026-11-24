@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Post every reply to the review feedback on a pull request at once, then make it a draft.
+
+The replies are drafted ahead of time, one per review point, and must reach the PR together,
+only after every commit is pushed, and be followed at once by turning the PR into a draft, so
+the author can revise them before any other person reads them. Doing that in one command is
+what keeps anything from going up piecemeal.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "lib"))
+from git_tools.github import GhFailed, call_gh, call_gh_json, fail, resolve_target  # noqa: E402
+
+PULL = r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)"
+PR = re.compile(PULL + "/?")
+TARGET = re.compile(PULL + r"#(discussion_r|pullrequestreview-|issuecomment-)(\d+)")
+THREAD_ANCHOR = "discussion_r"
+
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+INLINE_CODE = re.compile(r"(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
+MENTION = re.compile(r"(?<!\w)@[A-Za-z0-9]")
+COMMAND_LINE = re.compile(r"^[ \t]*/", re.MULTILINE)
+
+REPLY_KEYS = {"to", "body", "quote"}
+
+
+def outside_code(text):
+    """The text with fenced blocks and inline code spans blanked out.
+
+    GitHub mentions nobody and bots run no command from inside code, so only what is left
+    here can do either. An unclosed fence runs to the end, as GitHub renders it.
+    """
+    kept, fence = [], None
+    for line in text.splitlines():
+        opening = FENCE.match(line)
+        if fence:
+            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence):
+                fence = None
+            continue
+        if opening:
+            fence = opening.group(1)
+            continue
+        kept.append(line)
+    return INLINE_CODE.sub(" ", "\n".join(kept))
+
+
+def pr_identity(match):
+    """Owner and repo as GitHub compares them, ignoring case, with the PR number."""
+    return match.group(1).lower(), match.group(2).lower(), match.group(3)
+
+
+def text_problems(label, text):
+    visible = outside_code(text)
+    problems = []
+    if MENTION.search(visible):
+        problems.append(f"{label} mentions someone, which would notify them now")
+    if COMMAND_LINE.search(visible):
+        problems.append(f"{label} has a line starting with '/', which bots read as a command")
+    return problems
+
+
+def reply_problems(reply, pr):
+    if not isinstance(reply, dict):
+        return ["is not an object"], None
+
+    problems = [f"has an unknown key {key!r}" for key in sorted(set(reply) - REPLY_KEYS)]
+    to, body, quote = reply.get("to"), reply.get("body"), reply.get("quote")
+
+    match = TARGET.fullmatch(to) if isinstance(to, str) else None
+    if not match:
+        problems.append(f"'to' {to!r} is not a thread comment, review or conversation comment URL")
+    elif pr_identity(match) != pr:
+        problems.append(f"'to' {to!r} is on a different PR")
+
+    if not isinstance(body, str) or not body.strip():
+        problems.append("has an empty body")
+    else:
+        problems += text_problems("its body", body)
+
+    anchor = match.group(4) if match else None
+    if anchor == THREAD_ANCHOR and "quote" in reply:
+        problems.append("has a 'quote', but a thread comment takes a reply in its thread instead")
+    elif anchor and anchor != THREAD_ANCHOR and not (isinstance(quote, str) and quote.strip()):
+        problems.append("needs a non-empty 'quote', since GitHub has no reply to a review body or a conversation comment")
+    elif isinstance(quote, str):
+        problems += text_problems("its quote", quote)
+
+    return problems, match
+
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except OSError as error:
+        fail(f"cannot read {path}: {error.strerror}")
+    except json.JSONDecodeError as error:
+        fail(f"{path} is not JSON ({error})")
+
+    if not isinstance(document, dict):
+        fail(f"{path} must hold an object with 'pr' and 'replies'")
+    pr_url, replies = document.get("pr"), document.get("replies")
+    pr_match = PR.fullmatch(pr_url) if isinstance(pr_url, str) else None
+    if not pr_match:
+        fail(f"'pr' {pr_url!r} is not a pull request URL")
+    if not isinstance(replies, list):
+        fail("'replies' must be a list")
+    return pr_url, pr_identity(pr_match), replies
+
+
+def validate(replies, pr):
+    """Every reply as something to post, or every problem with the file at once."""
+    problems, planned, seen = [], [], set()
+    for position, reply in enumerate(replies, start=1):
+        found, match = reply_problems(reply, pr)
+        to = reply.get("to") if isinstance(reply, dict) else None
+        if isinstance(to, str):
+            if to in seen:
+                found.append(f"'to' {to!r} appears more than once")
+            seen.add(to)
+        problems += [f"reply {position} ({to}): {problem}" for problem in found]
+        if not found:
+            planned.append(plan(reply, match))
+
+    if problems:
+        fail("refusing to post anything:\n  " + "\n  ".join(problems))
+    return planned
+
+
+def blockquote(text):
+    return "\n".join(f"> {line}" for line in text.strip().splitlines())
+
+
+def plan(reply, match):
+    body = reply["body"].strip()
+    if match.group(4) == THREAD_ANCHOR:
+        return {"to": reply["to"], "kind": "thread", "comment": match.group(5), "text": body}
+    return {"to": reply["to"], "kind": "quote", "text": f"{blockquote(reply['quote'])}\n\n{body}"}
+
+
+def git(*arguments):
+    result = subprocess.run(["git", *arguments], capture_output=True, text=True)
+    if result.returncode != 0:
+        fail("run this from the PR's checkout: " + (result.stderr.strip().splitlines() or ["git failed"])[0])
+    return result.stdout
+
+
+def require_pushed(target):
+    """Replies talk about commits, so every one of them must already be on the PR."""
+    if target["state"] != "OPEN":
+        fail(f"{target['url']} is {target['state'].lower()}, not open")
+    head = git("rev-parse", "HEAD").strip()
+    if git("status", "--porcelain").strip():
+        fail("the working tree has uncommitted changes; commit and push them first")
+    if head != target["headRefOid"]:
+        fail(
+            f"HEAD is {head[:7]} but the PR's head is {target['headRefOid'][:7]}; "
+            "commit and push first, so every reply goes up after the work it describes"
+        )
+
+
+def endpoint(target, reply):
+    repo = f"repos/{target['owner']}/{target['repo']}"
+    if reply["kind"] == "thread":
+        return f"{repo}/pulls/{target['number']}/comments/{reply['comment']}/replies"
+    return f"{repo}/issues/{target['number']}/comments"
+
+
+def describe(target, planned):
+    out = [f"Would post {len(planned)} {'reply' if len(planned) == 1 else 'replies'} to {target['url']}, in this order:"]
+    for position, reply in enumerate(planned, start=1):
+        how = "in its thread" if reply["kind"] == "thread" else "as a conversation comment quoting it"
+        out.append(f"\n{position}. to {reply['to']}, {how}")
+        out += [f"    {line}".rstrip() for line in reply["text"].splitlines()]
+    out.append("")
+    out.append("The PR is already a draft, so it would stay one." if target["isDraft"] else "Then it would convert the PR to a draft.")
+    return "\n".join(out)
+
+
+def post_all(target, planned):
+    """Post in order, stopping at the first failure: what follows may build on what failed."""
+    posted = []
+    for reply in planned:
+        try:
+            comment = call_gh_json("api", "-X", "POST", endpoint(target, reply), "-f", f"body={reply['text']}")
+        except GhFailed as error:
+            return posted, f"{reply['to']}: {error}"
+        posted.append({"to": reply["to"], "url": comment.get("html_url"), "id": comment.get("id")})
+    return posted, None
+
+
+def make_draft(target):
+    if target["isDraft"]:
+        return "already", None
+    try:
+        call_gh("pr", "ready", target["url"], "--undo")
+    except GhFailed as error:
+        return "failed", str(error)
+    return "converted", None
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="git-review-reply",
+        description="Post every drafted reply to a PR's review feedback at once, then make the PR a draft.",
+    )
+    parser.add_argument("file", help="JSON file with the PR URL and the replies to post")
+    parser.add_argument("--dry-run", action="store_true", help="print what would be posted and post nothing")
+    options = parser.parse_args()
+
+    pr_url, pr, replies = load(options.file)
+    planned = validate(replies, pr)
+
+    target = resolve_target(pr_url, "number,url,state,isDraft,headRefOid")
+    require_pushed(target)
+
+    if not planned:
+        print(f"Nothing to post to {target['url']}; its draft state is unchanged.")
+        return
+    if options.dry_run:
+        print(describe(target, planned))
+        return
+
+    posted, post_error = post_all(target, planned)
+    draft, draft_error = make_draft(target)
+
+    unposted = [reply["to"] for reply in planned[len(posted):]]
+    report = {"pr": target["url"], "posted": posted, "draft": draft}
+    if unposted:
+        report["unposted"] = unposted
+    print(json.dumps(report, indent=2))
+
+    errors = []
+    if post_error:
+        errors.append(
+            f"posting stopped at {post_error}\n  posted: {', '.join(item['to'] for item in posted) or 'none'}"
+            f"\n  not posted: {', '.join(unposted)}"
+        )
+    if draft_error:
+        errors.append(f"could not convert {target['url']} to a draft, so it is still ready for review: {draft_error}")
+    if errors:
+        fail("\n".join(errors))
+
+
+if __name__ == "__main__":
+    main()
